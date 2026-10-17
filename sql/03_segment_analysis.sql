@@ -1,0 +1,1 @@
+-- Q4. Does Lending Club's grade separate risk well? How do default rate, loss rate and interest rate change from A to G?

@@ -1,5 +1,5 @@
 -- Clean Lending Club loans table (completed loans only)
-
+DROP VIEW IF EXISTS loans_mature;
 DROP TABLE IF EXISTS loans;
 
 CREATE TABLE loans (
@@ -44,3 +44,15 @@ CREATE TABLE loans (
     recoveries           NUMERIC(12, 2),
     net_loss             NUMERIC(12, 2) NOT NULL
 );
+
+-- Mature loans only: loans whose full term had ended before the data was collected.
+-- 36-month loans issued up to 2015, 60-month loans issued up to 2013.
+-- Used for all trend and segment analysis to avoid selection bias in recent years.
+CREATE VIEW loans_mature AS
+SELECT *
+FROM loans
+WHERE (term_months = 36 AND issue_year <= 2015)
+   OR (term_months = 60 AND issue_year <= 2013);
+
+SELECT COUNT(*) FROM loans LIMIT 5;
+SELECT COUNT(*) FROM loans_mature LIMIT 5;
