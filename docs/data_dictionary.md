@@ -289,3 +289,89 @@ Lending Club'ın **sonuçlanmış** kredilerinden oluşan temiz tablo (2007–20
 | `open_acc`, `delinq_2yrs`, `inq_last_6mths` | 25–26 | Kaynak veride boş (eski krediler) |
 
 Eksik değerler temiz tabloda **bilerek doldurulmadı**. Doldurma işlemi model notebook'unda, sadece eğitim verisi kullanılarak yapılacak.
+
+---
+
+# Veri Modeli (Türkçe)
+
+PostgreSQL veritabanı **star schema (yıldız şema)** yapısında: ortada fact (olay) tabloları, etrafında dimension (boyut) tabloları.
+`dim_date` ve `dim_state` tüm fact tabloları tarafından ortak kullanılır (paylaşılan boyut). Böylece onaylanan ve reddedilen başvurular aynı filtrelerle analiz edilebilir.
+Tabloların bağlantıları İngilizce bölümdeki diyagramda gösterilmiştir.
+
+| Tablo | Tür | Bir satır = | Satır | Kaynak |
+| --- | --- | --- | --- | --- |
+| `loans` | Fact | bir sonuçlanmış kredi | 1.347.698 | `notebooks/01_data_cleaning.ipynb` |
+| `loans_mature` | View | bir olgun kredi (vadesi dolmuş) | 676.296 | `sql/01_schema.sql` |
+| `rejected_applications` | Fact | bir reddedilen başvuru | 27.648.719 | `notebooks/02_rejected_cleaning.ipynb` |
+| `accepted_monthly` | Fact (özet) | bir ay + bir eyalet | 5.986 | `notebooks/01_data_cleaning.ipynb` |
+| `dim_date` | Boyut | bir ay | 140 | `sql/01c_dimensions.sql` |
+| `dim_state` | Boyut | bir ABD eyaleti (+ DC) | 51 | `sql/01c_dimensions.sql` |
+| `dim_grade` | Boyut | bir Lending Club notu | 7 | `sql/01c_dimensions.sql` |
+
+Tüm fact satırlarının dim tablolarında karşılığı var (`sql/01d_data_checks.sql` ile kontrol edildi).
+
+## `loans_mature` (view)
+
+Veri toplandığında vadesi tamamen dolmuş krediler: 2015'e kadar verilen 36 aylık ve 2013'e kadar verilen 60 aylık krediler.
+Eşikler ham veriyle doğrulandı (bu yıllara kadar hâlâ açık kredi oranı ~%0).
+Son yıllardaki seçim yanlılığını önlemek için trend ve segment analizlerinde kullanılır. Kolonları `loans` ile aynı.
+
+## `rejected_applications`
+
+Lending Club'ın reddettiği kredi başvuruları (2007–2018).
+
+| Kolon | SQL tipi | Açıklama |
+| --- | --- | --- |
+| `application_id` | BIGSERIAL | Otomatik üretilen satır numarası (birincil anahtar); kaynakta id yok |
+| `application_date` | DATE | Başvuru tarihi |
+| `application_month` | DATE | Başvuru ayının ilk günü; `dim_date` ile bağlanır |
+| `amount_requested` | NUMERIC | Talep edilen tutar, USD. Lending Club limitini aşabilir (1,4 milyon $'a kadar); 0 değerleri boş yapıldı |
+| `risk_score` | NUMERIC | Başvuru anındaki kredi skoru. **Kullanılmıyor:** 2013'ten itibaren ölçek değişiyor ve 2015, 2016, 2018'de %82–93'ü boş |
+| `dti` | NUMERIC | Borç/gelir oranı, yüzde. Yer tutucu değerler (-1%, 9999%…) boş yapıldı |
+| `addr_state` | CHAR(2) | ABD eyaleti; `dim_state` ile bağlanır |
+| `emp_length` | VARCHAR | Çalışma süresi (metin), boşlar `Unknown`. %76'sı `< 1 year` (form varsayılanı olabilir) |
+| `policy_code` | SMALLINT | 0 (%99,7) veya 2; 918 boş |
+
+## `accepted_monthly`
+
+Durumu ne olursa olsun **tüm** onaylanan kredilerin ay ve eyalet bazında sayısı ve tutarı.
+Onay oranı için gerekli, çünkü `loans` sadece sonuçlanmış kredileri içeriyor.
+
+| Kolon | SQL tipi | Açıklama |
+| --- | --- | --- |
+| `month` | DATE | Kredinin verildiği ayın ilk günü; `dim_date` ile bağlanır (`addr_state` ile birlikte birincil anahtar) |
+| `addr_state` | CHAR(2) | ABD eyaleti; `dim_state` ile bağlanır |
+| `accepted_count` | INTEGER | Onaylanan kredi sayısı |
+| `accepted_amount` | NUMERIC | Onaylanan toplam tutar, USD |
+
+Hiç kredi verilmeyen ay-eyalet kombinasyonları tabloda yok (olası 7.140 satırın 5.986'sı var).
+
+## `dim_date`
+
+Mayıs 2007 – Aralık 2018 arasında her ay için bir satır; `generate_series` ile üretildi.
+
+| Kolon | SQL tipi | Örnek |
+| --- | --- | --- |
+| `month_date` | DATE | 2015-12-01 (birincil anahtar) |
+| `year` | SMALLINT | 2015 |
+| `quarter` | SMALLINT | 4 |
+| `year_quarter` | VARCHAR | 2015Q4 |
+| `month` | SMALLINT | 12 |
+| `month_name` | VARCHAR | December |
+| `year_month` | CHAR(7) | 2015-12 |
+
+## `dim_state`
+
+| Kolon | SQL tipi | Açıklama |
+| --- | --- | --- |
+| `state_code` | CHAR(2) | İki harfli eyalet kodu (birincil anahtar) |
+| `state_name` | VARCHAR | Eyaletin tam adı |
+| `region` | VARCHAR | ABD Nüfus Bürosu bölgesi: Northeast, Midwest, South, West |
+
+## `dim_grade`
+
+| Kolon | SQL tipi | Açıklama |
+| --- | --- | --- |
+| `grade` | CHAR(1) | Lending Club notu A–G (birincil anahtar) |
+| `grade_order` | SMALLINT | Sıralama için 1 (A) – 7 (G) |
+| `risk_level` | VARCHAR | Low (A–B), Medium (C–D), High (E–G); olgun kredilerin default oranlarına göre |
