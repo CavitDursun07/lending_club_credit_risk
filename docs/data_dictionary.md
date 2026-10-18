@@ -1,4 +1,4 @@
-# Data Dictionary – `loans`
+# Data Dictionary – Lending Club Credit Risk Database
 
 Clean table of **completed** Lending Club loans (2007–2018).
 Available as `data/processed/loans_clean.parquet` and as the `loans` table in PostgreSQL.
@@ -77,7 +77,138 @@ Available as `data/processed/loans_clean.parquet` and as the `loans` table in Po
 | `open_acc`, `delinq_2yrs`, `inq_last_6mths` | 25–26 | Missing in source data (older loans) |
 
 Missing values are intentionally **not imputed** in the clean table. Imputation is done in the model notebook using training data only.
+
 ---
+
+# Data Model
+
+The PostgreSQL database follows a **star schema**: fact tables (events) in the center, dimension tables (descriptions) around them.
+`dim_date` and `dim_state` are shared by all fact tables (conformed dimensions), so approved and rejected applications can be analyzed with the same filters.
+
+```mermaid
+erDiagram
+    dim_date  ||--o{ loans                 : "issue_date = month_date"
+    dim_date  ||--o{ rejected_applications : "application_month = month_date"
+    dim_date  ||--o{ accepted_monthly      : "month = month_date"
+    dim_state ||--o{ loans                 : "addr_state = state_code"
+    dim_state ||--o{ rejected_applications : "addr_state = state_code"
+    dim_state ||--o{ accepted_monthly      : "addr_state = state_code"
+    dim_grade ||--o{ loans                 : "grade"
+
+    loans {
+        BIGINT id PK
+        DATE issue_date FK
+        CHAR addr_state FK
+        CHAR grade FK
+        SMALLINT is_default
+        NUMERIC net_loss
+    }
+    rejected_applications {
+        BIGINT application_id PK
+        DATE application_month FK
+        CHAR addr_state FK
+        NUMERIC amount_requested
+    }
+    accepted_monthly {
+        DATE month PK
+        CHAR addr_state PK
+        INTEGER accepted_count
+    }
+    dim_date {
+        DATE month_date PK
+        SMALLINT year
+        VARCHAR year_quarter
+    }
+    dim_state {
+        CHAR state_code PK
+        VARCHAR state_name
+        VARCHAR region
+    }
+    dim_grade {
+        CHAR grade PK
+        VARCHAR risk_level
+    }
+```
+
+| Table | Type | One row = | Rows | Source |
+| --- | --- | --- | --- | --- |
+| `loans` | Fact | one completed loan | 1,347,698 | `notebooks/01_data_cleaning.ipynb` |
+| `loans_mature` | View | one mature loan (full term ended) | 676,296 | `sql/01_schema.sql` |
+| `rejected_applications` | Fact | one rejected application | 27,648,719 | `notebooks/02_rejected_cleaning.ipynb` |
+| `accepted_monthly` | Fact (summary) | one month and state | 5,986 | `notebooks/01_data_cleaning.ipynb` |
+| `dim_date` | Dimension | one month | 140 | `sql/01c_dimensions.sql` |
+| `dim_state` | Dimension | one US state (+ DC) | 51 | `sql/01c_dimensions.sql` |
+| `dim_grade` | Dimension | one Lending Club grade | 7 | `sql/01c_dimensions.sql` |
+
+All fact rows match a dimension row (checked in `sql/01d_data_checks.sql`).
+
+## `loans_mature` (view)
+
+Loans whose full term had ended before the data was collected: 36-month loans issued up to 2015 and 60-month loans issued up to 2013.
+Thresholds were verified in the raw data (share of loans still open is ~0% up to these years).
+Used for trend and segment analysis to avoid selection bias in recent years. Same columns as `loans`.
+
+## `rejected_applications`
+
+Loan applications rejected by Lending Club (2007–2018).
+
+| Column | SQL type | Description |
+| --- | --- | --- |
+| `application_id` | BIGSERIAL | Generated row id (primary key); the source has no id |
+| `application_date` | DATE | Date of the application |
+| `application_month` | DATE | First day of the application month; joins to `dim_date` |
+| `amount_requested` | NUMERIC | Requested amount, USD. Can exceed Lending Club's limit (up to $1.4M); 0 set to missing |
+| `risk_score` | NUMERIC | Credit score at application. **Not used:** scale changes from 2013 and 82–93% missing in 2015, 2016, 2018 |
+| `dti` | NUMERIC | Debt-to-income ratio, percent. Placeholders (-1%, 9999%, …) set to missing |
+| `addr_state` | CHAR(2) | US state; joins to `dim_state` |
+| `emp_length` | VARCHAR | Employment length as text, missing -> `Unknown`. 76% `< 1 year` (possibly a form default) |
+| `policy_code` | SMALLINT | 0 (99.7%) or 2; 918 missing |
+
+## `accepted_monthly`
+
+Number and amount of **all** accepted loans per month and state, regardless of loan status.
+Needed for approval rates because `loans` contains only completed loans.
+
+| Column | SQL type | Description |
+| --- | --- | --- |
+| `month` | DATE | First day of the issue month; joins to `dim_date` (primary key with `addr_state`) |
+| `addr_state` | CHAR(2) | US state; joins to `dim_state` |
+| `accepted_count` | INTEGER | Number of accepted loans |
+| `accepted_amount` | NUMERIC | Total accepted amount, USD |
+
+Month-state combinations without any accepted loan are not in the table (5,986 of 7,140 possible rows).
+
+## `dim_date`
+
+One row per month, May 2007 – December 2018, generated with `generate_series`.
+
+| Column | SQL type | Example |
+| --- | --- | --- |
+| `month_date` | DATE | 2015-12-01 (primary key) |
+| `year` | SMALLINT | 2015 |
+| `quarter` | SMALLINT | 4 |
+| `year_quarter` | VARCHAR | 2015Q4 |
+| `month` | SMALLINT | 12 |
+| `month_name` | VARCHAR | December |
+| `year_month` | CHAR(7) | 2015-12 |
+
+## `dim_state`
+
+| Column | SQL type | Description |
+| --- | --- | --- |
+| `state_code` | CHAR(2) | Two-letter state code (primary key) |
+| `state_name` | VARCHAR | Full state name |
+| `region` | VARCHAR | US Census Bureau region: Northeast, Midwest, South, West |
+
+## `dim_grade`
+
+| Column | SQL type | Description |
+| --- | --- | --- |
+| `grade` | CHAR(1) | Lending Club grade A–G (primary key) |
+| `grade_order` | SMALLINT | 1 (A) to 7 (G), for sorting |
+| `risk_level` | VARCHAR | Low (A–B), Medium (C–D), High (E–G), based on mature-loan default rates |
+---
+
 
 # Veri Sözlüğü (Türkçe) – `loans`
 
