@@ -82,3 +82,58 @@ ORDER BY MIN(dti);
 -- DTI separates risk less strongly than FICO (2.9x) and grade (6.8x), so on its own it is a
 -- weaker risk signal, but it adds information that FICO does not capture (current debt burden).
 -- Note: only 5 mature loans have a missing DTI, too few to interpret.
+
+-- Q8. Which states have the highest default rate? (mature loans, states with at least 5,000 loans, top 10)
+SELECT
+    l.addr_state,
+    s.state_name,
+    s.region,
+    COUNT(*)                                           AS loan_count,
+    ROUND(AVG(l.is_default) * 100, 2)                  AS default_rate_pct,
+    ROUND(SUM(l.net_loss) / SUM(l.loan_amnt) * 100, 2) AS loss_rate_pct
+FROM loans_mature AS l
+JOIN dim_state AS s ON l.addr_state = s.state_code
+GROUP BY l.addr_state, s.state_name, s.region
+HAVING COUNT(*) >= 5000
+ORDER BY default_rate_pct DESC
+LIMIT 10;
+-- Q8. Which states have the highest default rate? (mature loans, states with at least 5,000 loans, top 10)
+SELECT
+    l.addr_state,
+    s.state_name,
+    s.region,
+    COUNT(*)                                           AS loan_count,
+    ROUND(AVG(l.is_default) * 100, 2)                  AS default_rate_pct,
+    ROUND(SUM(l.net_loss) / SUM(l.loan_amnt) * 100, 2) AS loss_rate_pct
+FROM loans_mature AS l
+JOIN dim_state AS s ON l.addr_state = s.state_code
+GROUP BY l.addr_state, s.state_name, s.region
+HAVING COUNT(*) >= 5000
+ORDER BY default_rate_pct DESC
+LIMIT 10;
+
+-- Finding: Nevada has the highest default rate (18.08%), 3.2 points above the portfolio average of 14.87%.
+-- 5 of the top 10 states are in the South (Oklahoma, Alabama, Tennessee, Louisiana, Florida).
+-- Two of the largest markets are also in the top 10: New York (57,783 loans, 16.16%) and
+-- Florida (47,487 loans, 16.42%), so their higher risk affects a large part of the portfolio.
+-- The differences between states are small: the top 10 range from 15.63% to 18.08%, at most
+-- 1.2x the average, much less than the gaps by grade (6.8x), FICO (2.9x) or DTI (1.8x).
+-- State differences may partly reflect a different borrower mix (grade, FICO) rather than
+-- location itself. Q8b checks the pattern by region.
+
+-- Q8b. How does risk differ by US region? (mature loans)
+-- Q8b. How does risk differ by US region? (mature loans)
+SELECT
+    s.region,
+    COUNT(*)                                           AS loan_count,
+    ROUND(AVG(l.is_default) * 100, 2)                  AS default_rate_pct,
+    ROUND(SUM(l.net_loss) / SUM(l.loan_amnt) * 100, 2) AS loss_rate_pct
+FROM loans_mature AS l
+JOIN dim_state AS s ON l.addr_state = s.state_code
+GROUP BY s.region
+ORDER BY default_rate_pct DESC;
+-- Finding: Region has almost no effect on risk. Default rates range only from 14.50% (Midwest)
+-- to 15.16% (South), a gap of 0.66 points, and loss rates are nearly identical (5.37%-5.68%).
+-- The South is the largest region (34.9% of mature loans) and the riskiest, but only slightly.
+-- The state-level differences in Q8 average out within regions, so location is a weak risk
+-- signal compared with grade, FICO and DTI. Region is not useful for credit decisions on its own.
