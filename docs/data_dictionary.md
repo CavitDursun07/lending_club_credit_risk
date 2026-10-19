@@ -1,377 +1,338 @@
-# Data Dictionary – Lending Club Credit Risk Database
+# Data Dictionary
 
-Clean table of **completed** Lending Club loans (2007–2018).
-Available as `data/processed/loans_clean.parquet` and as the `loans` table in PostgreSQL.
+**Source:** [Lending Club loan data (Kaggle)](https://www.kaggle.com/datasets/wordsforthewise/lending-club): accepted loans and rejected applications, 2007–2018.
+**Database:** PostgreSQL (`credit_risk`)
 
-- **Rows:** 1,347,698 (one row per loan)
-- **Columns:** 30
-- **Source:** [Lending Club Loan Data – Kaggle](https://www.kaggle.com/datasets/wordsforthewise/lending-club)
-
-**Column types**
-- **Origination:** known when the loan was issued – safe to use for analysis and modeling
-- **Outcome:** known only after the loan ended – use for loss analysis only, **never as model inputs** (data leakage)
-- **Derived:** created during cleaning
-
-## Identifier and dates
-
-| Column | SQL type | Type | Description |
-| --- | --- | --- | --- |
-| `id` | BIGINT | Origination | Unique Lending Club loan id (primary key) |
-| `issue_date` | DATE | Derived | Month the loan was issued, stored as the first day of the month (e.g. 2015-12-01) |
-| `issue_year` | SMALLINT | Derived | Year of `issue_date` (2007–2018) |
-| `issue_quarter` | VARCHAR | Derived | Quarter of `issue_date`, e.g. `2015Q4` – used for vintage analysis |
-
-## Loan
-
-| Column | SQL type | Type | Description |
-| --- | --- | --- | --- |
-| `loan_amnt` | NUMERIC | Origination | Loan amount applied for, USD (500 – 40,000) |
-| `term_months` | SMALLINT | Derived | Loan term in months: 36 or 60 |
-| `int_rate` | NUMERIC | Origination | Annual interest rate, percent (e.g. 13.56) |
-| `installment` | NUMERIC | Origination | Monthly payment owed by the borrower, USD |
-| `grade` | CHAR(1) | Origination | Lending Club risk grade, A (lowest risk) to G (highest risk) |
-| `sub_grade` | VARCHAR | Origination | Finer risk grade, A1 to G5 |
-| `purpose` | VARCHAR | Origination | Purpose stated by the borrower, e.g. `debt_consolidation`, `credit_card`, `small_business` |
-
-## Borrower
-
-| Column | SQL type | Type | Description |
-| --- | --- | --- | --- |
-| `emp_length` | VARCHAR | Origination | Employment length as text: `< 1 year`, `1 year` … `10+ years`, or `Unknown` (not reported) |
-| `emp_length_years` | SMALLINT | Derived | Employment length as a number, 0–10 (`< 1 year` = 0, `10+ years` = 10). NULL when `Unknown` |
-| `home_ownership` | VARCHAR | Origination | `RENT`, `OWN`, `MORTGAGE` or `OTHER` (ANY / NONE / OTHER merged) |
-| `annual_inc` | NUMERIC | Origination | Self-reported annual income, USD (≥ 1,000 after cleaning) |
-| `verification_status` | VARCHAR | Origination | Whether income was verified: `Not Verified`, `Source Verified`, `Verified` |
-| `addr_state` | CHAR(2) | Origination | US state of the borrower, two-letter code |
-
-## Credit history (at origination)
-
-| Column | SQL type | Type | Description |
-| --- | --- | --- | --- |
-| `dti` | NUMERIC | Origination | Debt-to-income ratio, percent: monthly debt payments (excluding mortgage and this loan) divided by monthly income. NULL if invalid (< 0 or > 100) |
-| `fico_range_low` | SMALLINT | Origination | Lower bound of the borrower's FICO credit score range |
-| `fico_range_high` | SMALLINT | Origination | Upper bound of the borrower's FICO credit score range |
-| `fico_avg` | NUMERIC | Derived | Midpoint of the FICO range: (low + high) / 2 |
-| `revol_util` | NUMERIC | Origination | Revolving credit utilization, percent: credit card balance relative to credit limit. NULL if > 150 |
-| `open_acc` | SMALLINT | Origination | Number of open credit lines |
-| `delinq_2yrs` | SMALLINT | Origination | Number of 30+ days past-due incidents in the last 2 years |
-| `inq_last_6mths` | SMALLINT | Origination | Number of credit inquiries in the last 6 months |
-
-## Outcome (post-origination – do not use as model inputs)
-
-| Column | SQL type | Type | Description |
-| --- | --- | --- | --- |
-| `loan_status` | VARCHAR | Outcome | Final status: `Fully Paid`, `Charged Off`, `Default`, or the "Does not meet the credit policy" variants |
-| `is_default` | SMALLINT | Derived | Target variable: 1 = Charged Off / Default, 0 = Fully Paid |
-| `total_pymnt` | NUMERIC | Outcome | Total amount received from the borrower, USD (principal + interest + fees + recoveries) |
-| `recoveries` | NUMERIC | Outcome | Amount recovered after the loan was charged off, USD |
-| `net_loss` | NUMERIC | Derived | Cash loss: `loan_amnt − total_pymnt` for defaulted loans (minimum 0), 0 for paid loans |
-
-## Missing values
-
-| Column | Missing | Reason |
-| --- | --- | --- |
-| `emp_length_years` | 78,178 | Employment length not reported (`emp_length` = `Unknown`) |
-| `revol_util` | 912 | Missing in source data or implausible value (> 150) removed |
-| `dti` | 516 | Missing in source data or invalid value (< 0 or > 100) removed |
-| `open_acc`, `delinq_2yrs`, `inq_last_6mths` | 25–26 | Missing in source data (older loans) |
-
-Missing values are intentionally **not imputed** in the clean table. Imputation is done in the model notebook using training data only.
+*Türkçe versiyon aşağıdadır.*
 
 ---
 
-# Data Model
+## 1. Data model
 
-The PostgreSQL database follows a **star schema**: fact tables (events) in the center, dimension tables (descriptions) around them.
-`dim_date` and `dim_state` are shared by all fact tables (conformed dimensions), so approved and rejected applications can be analyzed with the same filters.
+The model is a **star schema**: three fact tables share two dimension tables (*conformed dimensions*).
 
 ```mermaid
 erDiagram
-    dim_date  ||--o{ loans                 : "issue_date = month_date"
-    dim_date  ||--o{ rejected_applications : "application_month = month_date"
-    dim_date  ||--o{ accepted_monthly      : "month = month_date"
-    dim_state ||--o{ loans                 : "addr_state = state_code"
-    dim_state ||--o{ rejected_applications : "addr_state = state_code"
-    dim_state ||--o{ accepted_monthly      : "addr_state = state_code"
-    dim_grade ||--o{ loans                 : "grade"
+    dim_date ||--o{ loans : "month_date = issue_date"
+    dim_date ||--o{ rejected_applications : "month_date = application_month"
+    dim_date ||--o{ accepted_monthly : "month_date = month"
+    dim_state ||--o{ loans : "state_code = addr_state"
+    dim_state ||--o{ rejected_applications : "state_code = addr_state"
+    dim_state ||--o{ accepted_monthly : "state_code = addr_state"
 
     loans {
-        BIGINT id PK
-        DATE issue_date FK
-        CHAR addr_state FK
-        CHAR grade FK
-        SMALLINT is_default
-        NUMERIC net_loss
+        bigint id PK
+        date issue_date FK
+        char addr_state FK
+        numeric loan_amnt
+        smallint term_months
+        numeric int_rate
+        varchar grade
+        varchar purpose
+        numeric fico_avg
+        numeric dti
+        smallint is_default
+        numeric net_loss
     }
     rejected_applications {
-        BIGINT application_id PK
-        DATE application_month FK
-        CHAR addr_state FK
-        NUMERIC amount_requested
+        bigint application_id PK
+        date application_date
+        date application_month FK
+        char addr_state FK
+        numeric amount_requested
+        numeric risk_score
+        numeric dti
+        varchar emp_length
+        smallint policy_code
     }
     accepted_monthly {
-        DATE month PK
-        CHAR addr_state PK
-        INTEGER accepted_count
+        date month PK
+        char addr_state PK
+        integer accepted_count
+        numeric accepted_amount
     }
     dim_date {
-        DATE month_date PK
-        SMALLINT year
-        VARCHAR year_quarter
+        date month_date PK
+        smallint year
+        smallint quarter
+        varchar year_quarter
+        smallint month
+        varchar month_name
+        varchar year_month
     }
     dim_state {
-        CHAR state_code PK
-        VARCHAR state_name
-        VARCHAR region
-    }
-    dim_grade {
-        CHAR grade PK
-        VARCHAR risk_level
+        char state_code PK
+        varchar state_name
+        varchar region
     }
 ```
 
-| Table | Type | One row = | Rows | Source |
+*The `loans` box shows only the key columns; the full list is in section 3.*
+
+| Table | Type | Rows | Grain (one row = ) | Created in |
 | --- | --- | --- | --- | --- |
-| `loans` | Fact | one completed loan | 1,347,698 | `notebooks/01_data_cleaning.ipynb` |
-| `loans_mature` | View | one mature loan (full term ended) | 676,296 | `sql/01_schema.sql` |
-| `rejected_applications` | Fact | one rejected application | 27,648,719 | `notebooks/02_rejected_cleaning.ipynb` |
-| `accepted_monthly` | Fact (summary) | one month and state | 5,986 | `notebooks/01_data_cleaning.ipynb` |
-| `dim_date` | Dimension | one month | 140 | `sql/01c_dimensions.sql` |
-| `dim_state` | Dimension | one US state (+ DC) | 51 | `sql/01c_dimensions.sql` |
-| `dim_grade` | Dimension | one Lending Club grade | 7 | `sql/01c_dimensions.sql` |
+| `loans` | Fact | 1,347,698 | one completed loan | `sql/01_schema.sql`, `notebooks/01_data_cleaning.ipynb` |
+| `rejected_applications` | Fact | 27,648,719 | one rejected application | `sql/01b_schema_applications.sql`, `notebooks/02_rejected_cleaning.ipynb` |
+| `accepted_monthly` | Fact (summary) | 5,986 | one month + state | `sql/01b_schema_applications.sql`, `notebooks/01_data_cleaning.ipynb` |
+| `dim_date` | Dimension | 140 | one month (2007-05 to 2018-12) | `sql/01c_dimensions.sql` |
+| `dim_state` | Dimension | 51 | one US state (incl. DC) | `sql/01c_dimensions.sql` |
+| `loans_mature` | View | 676,296 | one mature loan | `sql/01_schema.sql` |
 
-All fact rows match a dimension row (checked in `sql/01d_data_checks.sql`).
-
-## `loans_mature` (view)
-
-Loans whose full term had ended before the data was collected: 36-month loans issued up to 2015 and 60-month loans issued up to 2013.
-Thresholds were verified in the raw data (share of loans still open is ~0% up to these years).
-Used for trend and segment analysis to avoid selection bias in recent years. Same columns as `loans`.
-
-## `rejected_applications`
-
-Loan applications rejected by Lending Club (2007–2018).
-
-| Column | SQL type | Description |
-| --- | --- | --- |
-| `application_id` | BIGSERIAL | Generated row id (primary key); the source has no id |
-| `application_date` | DATE | Date of the application |
-| `application_month` | DATE | First day of the application month; joins to `dim_date` |
-| `amount_requested` | NUMERIC | Requested amount, USD. Can exceed Lending Club's limit (up to $1.4M); 0 set to missing |
-| `risk_score` | NUMERIC | Credit score at application. **Not used:** scale changes from 2013 and 82–93% missing in 2015, 2016, 2018 |
-| `dti` | NUMERIC | Debt-to-income ratio, percent. Placeholders (-1%, 9999%, …) set to missing |
-| `addr_state` | CHAR(2) | US state; joins to `dim_state` |
-| `emp_length` | VARCHAR | Employment length as text, missing -> `Unknown`. 76% `< 1 year` (possibly a form default) |
-| `policy_code` | SMALLINT | 0 (99.7%) or 2; 918 missing |
-
-## `accepted_monthly`
-
-Number and amount of **all** accepted loans per month and state, regardless of loan status.
-Needed for approval rates because `loans` contains only completed loans.
-
-| Column | SQL type | Description |
-| --- | --- | --- |
-| `month` | DATE | First day of the issue month; joins to `dim_date` (primary key with `addr_state`) |
-| `addr_state` | CHAR(2) | US state; joins to `dim_state` |
-| `accepted_count` | INTEGER | Number of accepted loans |
-| `accepted_amount` | NUMERIC | Total accepted amount, USD |
-
-Month-state combinations without any accepted loan are not in the table (5,986 of 7,140 possible rows).
-
-## `dim_date`
-
-One row per month, May 2007 – December 2018, generated with `generate_series`.
-
-| Column | SQL type | Example |
-| --- | --- | --- |
-| `month_date` | DATE | 2015-12-01 (primary key) |
-| `year` | SMALLINT | 2015 |
-| `quarter` | SMALLINT | 4 |
-| `year_quarter` | VARCHAR | 2015Q4 |
-| `month` | SMALLINT | 12 |
-| `month_name` | VARCHAR | December |
-| `year_month` | CHAR(7) | 2015-12 |
-
-## `dim_state`
-
-| Column | SQL type | Description |
-| --- | --- | --- |
-| `state_code` | CHAR(2) | Two-letter state code (primary key) |
-| `state_name` | VARCHAR | Full state name |
-| `region` | VARCHAR | US Census Bureau region: Northeast, Midwest, South, West |
-
-## `dim_grade`
-
-| Column | SQL type | Description |
-| --- | --- | --- |
-| `grade` | CHAR(1) | Lending Club grade A–G (primary key) |
-| `grade_order` | SMALLINT | 1 (A) to 7 (G), for sorting |
-| `risk_level` | VARCHAR | Low (A–B), Medium (C–D), High (E–G), based on mature-loan default rates |
----
-
-
-# Veri Sözlüğü (Türkçe) – `loans`
-
-Lending Club'ın **sonuçlanmış** kredilerinden oluşan temiz tablo (2007–2018).
-`data/processed/loans_clean.parquet` dosyasında ve PostgreSQL'de `loans` tablosunda bulunur.
-
-- **Satır:** 1.347.698 (her satır bir kredi)
-- **Kolon:** 30
-- **Kaynak:** [Lending Club Loan Data – Kaggle](https://www.kaggle.com/datasets/wordsforthewise/lending-club)
-
-**Kolon türleri**
-- **Başvuru (Origination):** Kredi verilirken bilinen bilgi. Analizde ve modelde güvenle kullanılabilir.
-- **Sonuç (Outcome):** Sadece kredi bittikten sonra bilinen bilgi. Sadece kayıp analizinde kullanılır, **modele asla girdi olarak verilmez** (veri sızıntısı).
-- **Türetilmiş (Derived):** Temizlik sırasında oluşturulan kolon.
-
-## Kimlik ve tarihler
-
-| Kolon | SQL tipi | Tür | Açıklama |
-| --- | --- | --- | --- |
-| `id` | BIGINT | Başvuru | Lending Club'ın tekil kredi numarası (birincil anahtar) |
-| `issue_date` | DATE | Türetilmiş | Kredinin verildiği ay, ayın 1'i olarak saklanır (örn. 2015-12-01) |
-| `issue_year` | SMALLINT | Türetilmiş | Kredinin verildiği yıl (2007–2018) |
-| `issue_quarter` | VARCHAR | Türetilmiş | Kredinin verildiği çeyrek, örn. `2015Q4`. Vintage analizinde kullanılır |
-
-## Kredi
-
-| Kolon | SQL tipi | Tür | Açıklama |
-| --- | --- | --- | --- |
-| `loan_amnt` | NUMERIC | Başvuru | Başvurulan kredi tutarı, USD (500 – 40.000) |
-| `term_months` | SMALLINT | Türetilmiş | Vade (ay): 36 veya 60 |
-| `int_rate` | NUMERIC | Başvuru | Yıllık faiz oranı, yüzde (örn. 13,56) |
-| `installment` | NUMERIC | Başvuru | Borçlunun ödeyeceği aylık taksit, USD |
-| `grade` | CHAR(1) | Başvuru | Lending Club'ın risk notu: A (en düşük risk) – G (en yüksek risk) |
-| `sub_grade` | VARCHAR | Başvuru | Daha ayrıntılı risk notu: A1 – G5 |
-| `purpose` | VARCHAR | Başvuru | Borçlunun belirttiği kredi amacı, örn. `debt_consolidation` (borç birleştirme), `credit_card` (kredi kartı borcu), `small_business` (küçük işletme) |
-
-## Borçlu
-
-| Kolon | SQL tipi | Tür | Açıklama |
-| --- | --- | --- | --- |
-| `emp_length` | VARCHAR | Başvuru | Çalışma süresi (metin): `< 1 year`, `1 year` … `10+ years` veya `Unknown` (belirtilmemiş) |
-| `emp_length_years` | SMALLINT | Türetilmiş | Çalışma süresi (sayı), 0–10 (`< 1 year` = 0, `10+ years` = 10). `Unknown` ise boş (NULL) |
-| `home_ownership` | VARCHAR | Başvuru | Konut durumu: `RENT` (kira), `OWN` (ev sahibi), `MORTGAGE` (konut kredili), `OTHER` (diğer; ANY / NONE / OTHER birleştirildi) |
-| `annual_inc` | NUMERIC | Başvuru | Borçlunun beyan ettiği yıllık gelir, USD (temizlikten sonra ≥ 1.000) |
-| `verification_status` | VARCHAR | Başvuru | Gelirin doğrulanıp doğrulanmadığı: `Not Verified` (doğrulanmadı), `Source Verified` (gelir kaynağı doğrulandı), `Verified` (doğrulandı) |
-| `addr_state` | CHAR(2) | Başvuru | Borçlunun yaşadığı ABD eyaleti, iki harfli kod |
-
-## Kredi geçmişi (başvuru anında)
-
-| Kolon | SQL tipi | Tür | Açıklama |
-| --- | --- | --- | --- |
-| `dti` | NUMERIC | Başvuru | Borç/gelir oranı, yüzde: aylık borç ödemeleri (konut kredisi ve bu kredi hariç) ÷ aylık gelir. Geçersizse (< 0 veya > 100) boş |
-| `fico_range_low` | SMALLINT | Başvuru | Borçlunun FICO kredi skoru aralığının alt sınırı |
-| `fico_range_high` | SMALLINT | Başvuru | Borçlunun FICO kredi skoru aralığının üst sınırı |
-| `fico_avg` | NUMERIC | Türetilmiş | FICO aralığının orta noktası: (alt + üst) / 2 |
-| `revol_util` | NUMERIC | Başvuru | Döner kredi kullanım oranı, yüzde: kredi kartı borcunun kart limitine oranı. 150'den büyükse boş |
-| `open_acc` | SMALLINT | Başvuru | Açık kredi hesabı sayısı (kartlar, krediler vb.) |
-| `delinq_2yrs` | SMALLINT | Başvuru | Son 2 yılda 30 günden fazla geciken ödeme sayısı |
-| `inq_last_6mths` | SMALLINT | Başvuru | Son 6 ayda yapılan kredi sorgusu sayısı (sık kredi başvurusu yapıldığını gösterir) |
-
-## Sonuç (kredi bittikten sonra bilinen; modele girdi olarak verilmez)
-
-| Kolon | SQL tipi | Tür | Açıklama |
-| --- | --- | --- | --- |
-| `loan_status` | VARCHAR | Sonuç | Kredinin son durumu: `Fully Paid` (tamamen ödendi), `Charged Off` (zarar yazıldı), `Default` (temerrüt) veya "Does not meet the credit policy" türevleri |
-| `is_default` | SMALLINT | Türetilmiş | Hedef değişken: 1 = Charged Off / Default (battı), 0 = Fully Paid (ödendi) |
-| `total_pymnt` | NUMERIC | Sonuç | Borçludan alınan toplam para, USD (anapara + faiz + ücretler + tahsilatlar) |
-| `recoveries` | NUMERIC | Sonuç | Kredi zarar yazıldıktan sonra yapılan tahsilat, USD |
-| `net_loss` | NUMERIC | Türetilmiş | Nakit kaybı: batan kredilerde `loan_amnt − total_pymnt` (en az 0), ödenen kredilerde 0 |
-
-## Eksik değerler
-
-| Kolon | Eksik | Nedeni |
-| --- | --- | --- |
-| `emp_length_years` | 78.178 | Çalışma süresi belirtilmemiş (`emp_length` = `Unknown`) |
-| `revol_util` | 912 | Kaynak veride boş veya mantıksız değer (> 150) temizlendi |
-| `dti` | 516 | Kaynak veride boş veya geçersiz değer (< 0 ya da > 100) temizlendi |
-| `open_acc`, `delinq_2yrs`, `inq_last_6mths` | 25–26 | Kaynak veride boş (eski krediler) |
-
-Eksik değerler temiz tabloda **bilerek doldurulmadı**. Doldurma işlemi model notebook'unda, sadece eğitim verisi kullanılarak yapılacak.
+**Design notes**
+- All dates are stored at **month level** (first day of the month), so every fact table joins `dim_date` directly.
+- Year, quarter and month names are **not** stored in the fact tables; they come from `dim_date`.
+- Data integrity is checked in `sql/01d_data_checks.sql` (anti-joins: every date and state in the fact tables exists in the dimensions).
 
 ---
 
-# Veri Modeli (Türkçe)
+## 2. Key metrics
 
-PostgreSQL veritabanı **star schema (yıldız şema)** yapısında: ortada fact (olay) tabloları, etrafında dimension (boyut) tabloları.
-`dim_date` ve `dim_state` tüm fact tabloları tarafından ortak kullanılır (paylaşılan boyut). Böylece onaylanan ve reddedilen başvurular aynı filtrelerle analiz edilebilir.
-Tabloların bağlantıları İngilizce bölümdeki diyagramda gösterilmiştir.
+| Metric | Formula | Meaning |
+| --- | --- | --- |
+| Default rate | `AVG(is_default)` | Share of loans that defaulted (by count) |
+| Loss rate | `SUM(net_loss) / SUM(loan_amnt)` | Share of lent money that was lost (by amount) |
+| Approval rate | `accepted / (accepted + rejected)` | Share of applications that were approved |
 
-| Tablo | Tür | Bir satır = | Satır | Kaynak |
+---
+
+## 3. `loans` (fact)
+
+Completed loans only (`Fully Paid`, `Charged Off`, `Default` and the "Does not meet the credit policy" variants). Loans that were still open when the data ends (`Current`, `Late`, `In Grace Period`) are excluded because their outcome is unknown.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | integer, PK | Lending Club loan ID |
+| `issue_date` | date, FK → `dim_date` | Month the loan was issued (first day of month) |
+| `loan_amnt` | decimal | Loan amount ($) |
+| `term_months` | integer | Loan term: 36 or 60 months |
+| `int_rate` | decimal | Interest rate (%) |
+| `installment` | decimal | Monthly payment ($) |
+| `grade` | text | Lending Club risk grade, A (lowest risk) to G (highest risk) |
+| `sub_grade` | text | Sub-grade, A1 to G5 |
+| `purpose` | text | Loan purpose (e.g. `debt_consolidation`, `credit_card`) |
+| `emp_length` | text | Employment length as text; missing values are `Unknown` |
+| `emp_length_years` | integer | Employment length in years (0–10); `NULL` when `Unknown` |
+| `home_ownership` | text | `MORTGAGE`, `RENT`, `OWN`, `OTHER` (ANY and NONE merged into OTHER) |
+| `annual_inc` | decimal | Self-reported annual income ($); rows below $1,000 removed |
+| `verification_status` | text | Whether income was verified: `Not Verified`, `Source Verified`, `Verified` |
+| `addr_state` | char(2), FK → `dim_state` | Borrower's state |
+| `dti` | decimal | Debt-to-income ratio (%); values outside 0–100 set to `NULL` |
+| `fico_avg` | decimal | FICO credit score at origination: `(fico_range_low + fico_range_high) / 2` from the raw file |
+| `revol_util` | decimal | Revolving credit utilization (%); values above 150 set to `NULL` |
+| `open_acc` | integer | Number of open credit lines |
+| `delinq_2yrs` | integer | Number of 30+ days past-due incidents in the last 2 years |
+| `inq_last_6mths` | integer | Number of credit inquiries in the last 6 months |
+| `loan_status` | text | **Outcome.** Final loan status |
+| `is_default` | integer | **Outcome.** Target variable: 1 = Charged Off / Default, 0 = Fully Paid |
+| `total_pymnt` | decimal | **Outcome.** Total amount paid by the borrower, including recoveries ($) |
+| `recoveries` | decimal | **Outcome.** Amount recovered after default ($); already included in `total_pymnt` |
+| `net_loss` | decimal | **Outcome.** For defaults: `loan_amnt − total_pymnt` (minimum 0); otherwise 0 |
+
+> **Data leakage:** columns marked **Outcome** are only known after the loan is issued. They are used for loss analysis but must never be used as model inputs.
+
+**Missing values (on purpose):** `emp_length_years` (78,178), `revol_util` (912), `dti` (516), `open_acc` / `delinq_2yrs` / `inq_last_6mths` (~25). Imputation is a modeling decision and is done in the model notebook.
+
+### `loans_mature` (view)
+
+Loans whose full term had passed before the data ends. Used for trend and segment analysis to avoid **selection bias** (recent loans in `loans` are mostly early payoffs and early defaults).
+
+| Term | Included issue dates | Filter |
+| --- | --- | --- |
+| 36 months | up to 2015 | `issue_date < '2016-01-01'` |
+| 60 months | up to 2013 | `issue_date < '2014-01-01'` |
+
+Same columns as `loans`. Thresholds come from the maturity check in `notebooks/01_data_cleaning.ipynb` (share of loans still open by issue year and term).
+
+---
+
+## 4. `rejected_applications` (fact)
+
+Applications rejected by Lending Club. Cleaned in chunks from ~27.6M raw rows.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `application_id` | integer, PK | Surrogate key (generated, `BIGSERIAL`); the raw file has no ID |
+| `application_date` | date | Application date |
+| `application_month` | date, FK → `dim_date` | First day of the application month |
+| `amount_requested` | decimal | Requested loan amount ($); values ≤ 0 set to `NULL` |
+| `risk_score` | decimal | Risk score at application; values ≤ 0 set to `NULL`. **Not used:** scale changes in 2013 and mostly missing after 2014 |
+| `dti` | decimal | Debt-to-income ratio (%); values outside 0–100 set to `NULL` |
+| `addr_state` | char(2), FK → `dim_state` | Applicant's state |
+| `emp_length` | text | Employment length; missing values are `Unknown`. 76% are `< 1 year` (possibly a form default), use with care |
+| `policy_code` | integer | Lending Club policy code (0 or 2) |
+
+Index: `(application_month, addr_state)` for joins with `accepted_monthly` and the dimensions.
+
+---
+
+## 5. `accepted_monthly` (fact, summary)
+
+Number and amount of **all** accepted loans per month and state, from the raw file regardless of loan status. Needed for approval rates, because `loans` contains only completed loans.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `month` | date, PK, FK → `dim_date` | First day of the issue month |
+| `addr_state` | char(2), PK, FK → `dim_state` | Borrower's state |
+| `accepted_count` | integer | Number of accepted loans |
+| `accepted_amount` | decimal | Total accepted loan amount ($) |
+
+Total: 2,260,668 accepted loans · 139 months · 51 states.
+
+---
+
+## 6. `dim_date` (dimension)
+
+One row per month, generated with `generate_series` (2007-05 to 2018-12).
+
+| Column | Type | Example | Description |
+| --- | --- | --- | --- |
+| `month_date` | date, PK | `2015-12-01` | First day of the month (join key) |
+| `year` | integer | `2015` | Year |
+| `quarter` | integer | `4` | Quarter (1–4) |
+| `year_quarter` | text | `2015Q4` | Year and quarter |
+| `month` | integer | `12` | Month number (1–12) |
+| `month_name` | text | `December` | Month name |
+| `year_month` | text | `2015-12` | Year and month |
+
+## 7. `dim_state` (dimension)
+
+| Column | Type | Example | Description |
+| --- | --- | --- | --- |
+| `state_code` | char(2), PK | `CA` | Two-letter state code (join key) |
+| `state_name` | text | `California` | State name |
+| `region` | text | `West` | US Census region: `Northeast`, `Midwest`, `South`, `West` |
+
+---
+---
+
+# Veri Sözlüğü (Türkçe)
+
+**Kaynak:** Lending Club kredi verisi (Kaggle): onaylanan krediler ve reddedilen başvurular, 2007–2018.
+**Veritabanı:** PostgreSQL (`credit_risk`)
+
+## 1. Veri modeli
+
+Model bir **yıldız şemasıdır (star schema)**: üç fact (olay) tablosu, iki ortak dim (boyut) tablosunu paylaşır (*paylaşılan boyut, conformed dimension*). Şema yukarıdaki İngilizce bölümdedir.
+
+| Tablo | Tür | Satır | Bir satır = | Oluşturulduğu yer |
 | --- | --- | --- | --- | --- |
-| `loans` | Fact | bir sonuçlanmış kredi | 1.347.698 | `notebooks/01_data_cleaning.ipynb` |
-| `loans_mature` | View | bir olgun kredi (vadesi dolmuş) | 676.296 | `sql/01_schema.sql` |
-| `rejected_applications` | Fact | bir reddedilen başvuru | 27.648.719 | `notebooks/02_rejected_cleaning.ipynb` |
-| `accepted_monthly` | Fact (özet) | bir ay + bir eyalet | 5.986 | `notebooks/01_data_cleaning.ipynb` |
-| `dim_date` | Boyut | bir ay | 140 | `sql/01c_dimensions.sql` |
-| `dim_state` | Boyut | bir ABD eyaleti (+ DC) | 51 | `sql/01c_dimensions.sql` |
-| `dim_grade` | Boyut | bir Lending Club notu | 7 | `sql/01c_dimensions.sql` |
+| `loans` | Fact | 1,347,698 | sonuçlanmış bir kredi | `sql/01_schema.sql`, `notebooks/01_data_cleaning.ipynb` |
+| `rejected_applications` | Fact | 27,648,719 | reddedilen bir başvuru | `sql/01b_schema_applications.sql`, `notebooks/02_rejected_cleaning.ipynb` |
+| `accepted_monthly` | Fact (özet) | 5,986 | bir ay + eyalet | `sql/01b_schema_applications.sql`, `notebooks/01_data_cleaning.ipynb` |
+| `dim_date` | Dim | 140 | bir ay (2007-05 – 2018-12) | `sql/01c_dimensions.sql` |
+| `dim_state` | Dim | 51 | bir ABD eyaleti (DC dahil) | `sql/01c_dimensions.sql` |
+| `loans_mature` | View | 676,296 | vadesi dolmuş bir kredi | `sql/01_schema.sql` |
 
-Tüm fact satırlarının dim tablolarında karşılığı var (`sql/01d_data_checks.sql` ile kontrol edildi).
+**Tasarım notları**
+- Bütün tarihler **ay düzeyinde** (ayın ilk günü) tutulur; böylece her fact tablosu `dim_date` ile doğrudan birleşir.
+- Yıl, çeyrek ve ay adı fact tablolarında **tutulmaz**; `dim_date`'ten gelir.
+- Veri bütünlüğü `sql/01d_data_checks.sql` ile kontrol edilir (anti-join: fact tablolarındaki her tarih ve eyalet, dim tablolarında var mı?).
 
-## `loans_mature` (view)
+## 2. Temel ölçüler
 
-Veri toplandığında vadesi tamamen dolmuş krediler: 2015'e kadar verilen 36 aylık ve 2013'e kadar verilen 60 aylık krediler.
-Eşikler ham veriyle doğrulandı (bu yıllara kadar hâlâ açık kredi oranı ~%0).
-Son yıllardaki seçim yanlılığını önlemek için trend ve segment analizlerinde kullanılır. Kolonları `loans` ile aynı.
-
-## `rejected_applications`
-
-Lending Club'ın reddettiği kredi başvuruları (2007–2018).
-
-| Kolon | SQL tipi | Açıklama |
+| Ölçü | Formül | Anlamı |
 | --- | --- | --- |
-| `application_id` | BIGSERIAL | Otomatik üretilen satır numarası (birincil anahtar); kaynakta id yok |
-| `application_date` | DATE | Başvuru tarihi |
-| `application_month` | DATE | Başvuru ayının ilk günü; `dim_date` ile bağlanır |
-| `amount_requested` | NUMERIC | Talep edilen tutar, USD. Lending Club limitini aşabilir (1,4 milyon $'a kadar); 0 değerleri boş yapıldı |
-| `risk_score` | NUMERIC | Başvuru anındaki kredi skoru. **Kullanılmıyor:** 2013'ten itibaren ölçek değişiyor ve 2015, 2016, 2018'de %82–93'ü boş |
-| `dti` | NUMERIC | Borç/gelir oranı, yüzde. Yer tutucu değerler (-1%, 9999%…) boş yapıldı |
-| `addr_state` | CHAR(2) | ABD eyaleti; `dim_state` ile bağlanır |
-| `emp_length` | VARCHAR | Çalışma süresi (metin), boşlar `Unknown`. %76'sı `< 1 year` (form varsayılanı olabilir) |
-| `policy_code` | SMALLINT | 0 (%99,7) veya 2; 918 boş |
+| Default oranı | `AVG(is_default)` | Batan kredilerin oranı (adet bazında) |
+| Kayıp oranı | `SUM(net_loss) / SUM(loan_amnt)` | Verilen paranın kaybedilen kısmı (tutar bazında) |
+| Onay oranı | `onaylanan / (onaylanan + reddedilen)` | Onaylanan başvuruların oranı |
 
-## `accepted_monthly`
+## 3. `loans` (fact)
 
-Durumu ne olursa olsun **tüm** onaylanan kredilerin ay ve eyalet bazında sayısı ve tutarı.
-Onay oranı için gerekli, çünkü `loans` sadece sonuçlanmış kredileri içeriyor.
+Sadece sonuçlanmış krediler (`Fully Paid`, `Charged Off`, `Default` ve "Does not meet the credit policy" türevleri). Veri bittiğinde hâlâ açık olan krediler (`Current`, `Late`, `In Grace Period`) sonuçları bilinmediği için çıkarıldı.
 
-| Kolon | SQL tipi | Açıklama |
+| Kolon | Tip | Açıklama |
 | --- | --- | --- |
-| `month` | DATE | Kredinin verildiği ayın ilk günü; `dim_date` ile bağlanır (`addr_state` ile birlikte birincil anahtar) |
-| `addr_state` | CHAR(2) | ABD eyaleti; `dim_state` ile bağlanır |
-| `accepted_count` | INTEGER | Onaylanan kredi sayısı |
-| `accepted_amount` | NUMERIC | Onaylanan toplam tutar, USD |
+| `id` | tam sayı, PK | Lending Club kredi numarası |
+| `issue_date` | tarih, FK → `dim_date` | Kredinin verildiği ay (ayın ilk günü) |
+| `loan_amnt` | ondalık | Kredi tutarı ($) |
+| `term_months` | tam sayı | Vade: 36 veya 60 ay |
+| `int_rate` | ondalık | Faiz oranı (%) |
+| `installment` | ondalık | Aylık taksit ($) |
+| `grade` | metin | Lending Club risk notu, A (en düşük risk) – G (en yüksek risk) |
+| `sub_grade` | metin | Alt not, A1 – G5 |
+| `purpose` | metin | Kredinin amacı (örn. `debt_consolidation` = borç birleştirme, `credit_card` = kredi kartı borcu) |
+| `emp_length` | metin | Çalışma süresi (metin); eksik değerler `Unknown` |
+| `emp_length_years` | tam sayı | Çalışma süresi, yıl (0–10); `Unknown` ise `NULL` |
+| `home_ownership` | metin | Konut durumu: `MORTGAGE` (ipotekli), `RENT` (kira), `OWN` (kendi evi), `OTHER` |
+| `annual_inc` | ondalık | Beyan edilen yıllık gelir ($); 1.000 $ altı satırlar çıkarıldı |
+| `verification_status` | metin | Gelir doğrulandı mı: `Not Verified`, `Source Verified`, `Verified` |
+| `addr_state` | char(2), FK → `dim_state` | Borçlunun eyaleti |
+| `dti` | ondalık | Borç / gelir oranı (%); 0–100 dışındaki değerler `NULL` yapıldı |
+| `fico_avg` | ondalık | Kredi verilirken FICO kredi skoru: ham dosyadaki `(fico_range_low + fico_range_high) / 2` |
+| `revol_util` | ondalık | Döner kredi (kredi kartı) limit kullanım oranı (%); 150 üstü `NULL` yapıldı |
+| `open_acc` | tam sayı | Açık kredi hesabı sayısı |
+| `delinq_2yrs` | tam sayı | Son 2 yılda 30+ gün gecikme sayısı |
+| `inq_last_6mths` | tam sayı | Son 6 ayda yapılan kredi sorgusu sayısı |
+| `loan_status` | metin | **Sonuç.** Kredinin son durumu |
+| `is_default` | tam sayı | **Sonuç.** Hedef değişken: 1 = Charged Off / Default (battı), 0 = Fully Paid (ödendi) |
+| `total_pymnt` | ondalık | **Sonuç.** Borçlunun ödediği toplam tutar, tahsilatlar dahil ($) |
+| `recoveries` | ondalık | **Sonuç.** Default sonrası tahsil edilen tutar ($); `total_pymnt`'in içinde zaten var |
+| `net_loss` | ondalık | **Sonuç.** Default olanlarda `loan_amnt − total_pymnt` (en az 0); diğerlerinde 0 |
 
-Hiç kredi verilmeyen ay-eyalet kombinasyonları tabloda yok (olası 7.140 satırın 5.986'sı var).
+> **Veri sızıntısı (data leakage):** **Sonuç** olarak işaretli kolonlar ancak kredi verildikten sonra bilinir. Kayıp analizinde kullanılır, ama modelde girdi olarak asla kullanılmamalıdır.
 
-## `dim_date`
+**Bilerek bırakılan eksik değerler:** `emp_length_years` (78,178), `revol_util` (912), `dti` (516), `open_acc` / `delinq_2yrs` / `inq_last_6mths` (~25). Eksik değer doldurma (imputation) bir modelleme kararıdır ve model notebook'unda yapılır.
 
-Mayıs 2007 – Aralık 2018 arasında her ay için bir satır; `generate_series` ile üretildi.
+### `loans_mature` (view)
 
-| Kolon | SQL tipi | Örnek |
+Veri bitmeden vadesi dolmuş krediler. **Seçim yanlılığından (selection bias)** kaçınmak için trend ve segment analizinde kullanılır (`loans` içindeki yeni krediler çoğunlukla erken kapanan veya erken batan kredilerden oluşur).
+
+| Vade | Dahil edilen dönem | Filtre |
 | --- | --- | --- |
-| `month_date` | DATE | 2015-12-01 (birincil anahtar) |
-| `year` | SMALLINT | 2015 |
-| `quarter` | SMALLINT | 4 |
-| `year_quarter` | VARCHAR | 2015Q4 |
-| `month` | SMALLINT | 12 |
-| `month_name` | VARCHAR | December |
-| `year_month` | CHAR(7) | 2015-12 |
+| 36 ay | 2015 sonuna kadar | `issue_date < '2016-01-01'` |
+| 60 ay | 2013 sonuna kadar | `issue_date < '2014-01-01'` |
 
-## `dim_state`
+Kolonları `loans` ile aynıdır. Sınırlar `notebooks/01_data_cleaning.ipynb` içindeki olgunluk kontrolünden gelir (veriliş yılı ve vadeye göre hâlâ açık olan kredilerin oranı).
 
-| Kolon | SQL tipi | Açıklama |
+## 4. `rejected_applications` (fact)
+
+Lending Club'ın reddettiği başvurular. ~27.6 milyon ham satırdan parça parça (chunk) temizlendi.
+
+| Kolon | Tip | Açıklama |
 | --- | --- | --- |
-| `state_code` | CHAR(2) | İki harfli eyalet kodu (birincil anahtar) |
-| `state_name` | VARCHAR | Eyaletin tam adı |
-| `region` | VARCHAR | ABD Nüfus Bürosu bölgesi: Northeast, Midwest, South, West |
+| `application_id` | tam sayı, PK | Yapay anahtar (surrogate key, `BIGSERIAL` ile otomatik); ham dosyada ID yok |
+| `application_date` | tarih | Başvuru tarihi |
+| `application_month` | tarih, FK → `dim_date` | Başvuru ayının ilk günü |
+| `amount_requested` | ondalık | İstenen kredi tutarı ($); 0 ve altı `NULL` yapıldı |
+| `risk_score` | ondalık | Başvurudaki risk skoru; 0 ve altı `NULL` yapıldı. **Kullanılmıyor:** 2013'te ölçeği değişiyor, 2014 sonrası çoğu eksik |
+| `dti` | ondalık | Borç / gelir oranı (%); 0–100 dışındaki değerler `NULL` yapıldı |
+| `addr_state` | char(2), FK → `dim_state` | Başvuranın eyaleti |
+| `emp_length` | metin | Çalışma süresi; eksikler `Unknown`. %76'sı `< 1 year` (form varsayılanı olabilir), dikkatli kullanılmalı |
+| `policy_code` | tam sayı | Lending Club politika kodu (0 veya 2) |
 
-## `dim_grade`
+İndeks: `accepted_monthly` ve dim tablolarıyla JOIN için `(application_month, addr_state)`.
 
-| Kolon | SQL tipi | Açıklama |
+## 5. `accepted_monthly` (fact, özet)
+
+Ay ve eyalet bazında, kredi durumuna bakılmaksızın **tüm** onaylanan kredilerin sayısı ve tutarı (ham dosyadan). Onay oranı için gerekli, çünkü `loans` sadece sonuçlanmış kredileri içeriyor.
+
+| Kolon | Tip | Açıklama |
 | --- | --- | --- |
-| `grade` | CHAR(1) | Lending Club notu A–G (birincil anahtar) |
-| `grade_order` | SMALLINT | Sıralama için 1 (A) – 7 (G) |
-| `risk_level` | VARCHAR | Low (A–B), Medium (C–D), High (E–G); olgun kredilerin default oranlarına göre |
+| `month` | tarih, PK, FK → `dim_date` | Veriliş ayının ilk günü |
+| `addr_state` | char(2), PK, FK → `dim_state` | Borçlunun eyaleti |
+| `accepted_count` | tam sayı | Onaylanan kredi sayısı |
+| `accepted_amount` | ondalık | Onaylanan toplam kredi tutarı ($) |
+
+Toplam: 2,260,668 onaylanan kredi · 139 ay · 51 eyalet.
+
+## 6. `dim_date` (dim)
+
+Her ay için bir satır, `generate_series` ile oluşturuldu (2007-05 – 2018-12).
+
+| Kolon | Tip | Örnek | Açıklama |
+| --- | --- | --- | --- |
+| `month_date` | tarih, PK | `2015-12-01` | Ayın ilk günü (JOIN anahtarı) |
+| `year` | tam sayı | `2015` | Yıl |
+| `quarter` | tam sayı | `4` | Çeyrek (1–4) |
+| `year_quarter` | metin | `2015Q4` | Yıl ve çeyrek |
+| `month` | tam sayı | `12` | Ay numarası (1–12) |
+| `month_name` | metin | `December` | Ay adı |
+| `year_month` | metin | `2015-12` | Yıl ve ay |
+
+## 7. `dim_state` (dim)
+
+| Kolon | Tip | Örnek | Açıklama |
+| --- | --- | --- | --- |
+| `state_code` | char(2), PK | `CA` | İki harfli eyalet kodu (JOIN anahtarı) |
+| `state_name` | metin | `California` | Eyalet adı |
+| `region` | metin | `West` | ABD Nüfus Bürosu bölgesi: `Northeast` (Kuzeydoğu), `Midwest` (Orta Batı), `South` (Güney), `West` (Batı) |

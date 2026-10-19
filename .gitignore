@@ -16,4 +16,4 @@ __pycache__/
 .vscode/
 
 # SQLTools scratch files
-.session.sql
+*.session.sql

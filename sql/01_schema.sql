@@ -7,8 +7,6 @@ CREATE TABLE loans (
 
     -- origination date
     issue_date           DATE        NOT NULL,
-    issue_year           SMALLINT    NOT NULL,
-    issue_quarter        VARCHAR(6)  NOT NULL,   -- e.g. 2015Q4
 
     -- loan
     loan_amnt            NUMERIC(10, 2),
@@ -29,8 +27,6 @@ CREATE TABLE loans (
 
     -- credit history
     dti                  NUMERIC(6, 2),          -- debt-to-income, percent
-    fico_range_low       SMALLINT,
-    fico_range_high      SMALLINT,
     fico_avg             NUMERIC(5, 1),
     revol_util           NUMERIC(5, 1),          -- percent
     open_acc             SMALLINT,
@@ -51,8 +47,9 @@ CREATE TABLE loans (
 CREATE VIEW loans_mature AS
 SELECT *
 FROM loans
-WHERE (term_months = 36 AND issue_year <= 2015)
-   OR (term_months = 60 AND issue_year <= 2013);
+WHERE (term_months = 36 AND issue_date < DATE '2016-01-01')
+   OR (term_months = 60 AND issue_date < DATE '2014-01-01');
 
 SELECT COUNT(*) FROM loans LIMIT 5;
 SELECT COUNT(*) FROM loans_mature LIMIT 5;
+

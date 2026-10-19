@@ -69,29 +69,9 @@ INSERT INTO dim_state (state_code, state_name, region) VALUES
     ('HI', 'Hawaii', 'West'), ('OR', 'Oregon', 'West'),
     ('WA', 'Washington', 'West');
 
-    -- ---------- dim_grade: one row per Lending Club grade ----------
--- Risk levels based on mature-loan default rates (Q4):
--- Low: A-B (5-11%), Medium: C-D (18-24%), High: E-G (29-37%)
-DROP TABLE IF EXISTS dim_grade;
-
-CREATE TABLE dim_grade (
-    grade        CHAR(1)      PRIMARY KEY,
-    grade_order  SMALLINT     NOT NULL,   -- 1 (A) .. 7 (G), for sorting
-    risk_level   VARCHAR(10)  NOT NULL    -- Low, Medium, High
-);
-
-INSERT INTO dim_grade (grade, grade_order, risk_level) VALUES
-    ('A', 1, 'Low'),
-    ('B', 2, 'Low'),
-    ('C', 3, 'Medium'),
-    ('D', 4, 'Medium'),
-    ('E', 5, 'High'),
-    ('F', 6, 'High'),
-    ('G', 7, 'High');
 
 SELECT 'dim_date' AS table_name, COUNT(*) AS row_count FROM dim_date
 UNION ALL
 SELECT 'dim_state', COUNT(*) FROM dim_state
-UNION ALL
-SELECT 'dim_grade', COUNT(*) FROM dim_grade;
-SELECT * FROM dim_date ORDER BY month_date LIMIT 5;
+
+
