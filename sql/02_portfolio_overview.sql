@@ -1,6 +1,3 @@
-SELECT *
-FROM loans
-LIMIT 10;
 -- Q1. What does the loan portfolio look like overall? 
 SELECT 
     COUNT(*)                                  AS loan_count,
