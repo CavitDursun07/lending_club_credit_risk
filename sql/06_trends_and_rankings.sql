@@ -96,3 +96,30 @@ ORDER BY year;
 -- 2013 was the only exception: +131% volume with a lower default rate (-1.25 pts),
 -- when interest rates were at their highest (Q9b).
 -- In 3 of the 4 years after 2011, fast growth came with rising risk.
+
+-- Q17. Cumulative share of lent amount and net loss, from the riskiest sub-grade (mature loans)
+WITH by_sub_grade AS (
+    SELECT
+        sub_grade,
+        COUNT(*)       AS loan_count,
+        SUM(loan_amnt) AS total_amount,
+        SUM(net_loss)  AS total_net_loss
+    FROM loans_mature
+    GROUP BY sub_grade
+)
+SELECT
+    sub_grade,
+    loan_count,
+    ROUND(total_net_loss * 100.0 / total_amount, 2)          AS loss_rate_pct,
+    ROUND(
+        SUM(total_amount) OVER (ORDER BY sub_grade DESC) * 100.0
+        / SUM(total_amount) OVER (),
+        2
+    )                                                         AS cum_amount_share_pct,
+    ROUND(
+        SUM(total_net_loss) OVER (ORDER BY sub_grade DESC) * 100.0
+        / SUM(total_net_loss) OVER (),
+        2
+    )                                                         AS cum_loss_share_pct
+FROM by_sub_grade
+ORDER BY sub_grade DESC;
