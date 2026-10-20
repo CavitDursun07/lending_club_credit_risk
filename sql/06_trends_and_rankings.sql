@@ -123,3 +123,13 @@ SELECT
     )                                                         AS cum_loss_share_pct
 FROM by_sub_grade
 ORDER BY sub_grade DESC;
+
+-- Finding: Losses are concentrated in the riskier sub-grades, but not extremely.
+-- Sub-grades E1-G5 are 7.81% of the lent amount but cause 17.01% of net losses (2.2x their weight).
+-- All D-G sub-grades are 20.33% of the amount and cause 38.31% of losses.
+-- To avoid half of all losses, Lending Club would have to stop lending to everything from C4 down,
+-- giving up 29.33% of the lent amount.
+-- At the other end, A1-A5 are 22.65% of the amount but cause only 7.74% of losses.
+-- Loss rate is not perfectly ordered within G (e.g. G4 11.16% vs G3 14.95%) because these
+-- sub-grades have only 182-765 loans; from F2 downward the order is almost perfect.
+-- Rejecting risky loans also gives up their interest income, so the trade-off is examined in 07_policy_scenario.sql.
