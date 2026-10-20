@@ -140,3 +140,64 @@ ORDER BY approval_rate_pct DESC;
 -- Together this suggests that Lending Club screened Southern applicants more strictly,
 -- and this stricter screening brought the default rate of approved loans close to other regions.
 -- At state level the screening did not fully close the gap (Q12: Alabama, Tennessee, Louisiana).
+
+-- Q13. Is there a link between the approval rate and the default rate by year?
+WITH accepted AS (
+    SELECT
+        month,
+        SUM(accepted_count) AS accepted_count
+    FROM accepted_monthly
+    GROUP BY month
+),
+rejected AS (
+    SELECT
+        application_month AS month,
+        COUNT(*)          AS rejected_count
+    FROM rejected_applications
+    GROUP BY application_month
+),
+approval AS (
+    SELECT
+        d.year,
+        SUM(COALESCE(a.accepted_count, 0)) AS accepted_count,
+        SUM(COALESCE(r.rejected_count, 0)) AS rejected_count
+    FROM dim_date AS d
+    LEFT JOIN accepted AS a ON d.month_date = a.month
+    LEFT JOIN rejected AS r ON d.month_date = r.month
+    GROUP BY d.year
+),
+performance AS (
+    SELECT
+        d.year,
+        COUNT(*)                                           AS mature_loan_count,
+        ROUND(AVG(l.is_default) * 100, 2)                  AS default_rate_pct,
+        ROUND(SUM(l.net_loss) / SUM(l.loan_amnt) * 100, 2) AS loss_rate_pct
+    FROM loans_mature AS l
+    JOIN dim_date AS d ON l.issue_date = d.month_date
+    WHERE l.term_months = 36
+    GROUP BY d.year
+)
+SELECT
+    ap.year,
+    ROUND(
+        ap.accepted_count * 100.0
+        / NULLIF(ap.accepted_count + ap.rejected_count, 0),
+        2
+    )                      AS approval_rate_pct,
+    p.mature_loan_count,
+    p.default_rate_pct,
+    p.loss_rate_pct
+FROM approval AS ap
+LEFT JOIN performance AS p ON ap.year = p.year
+ORDER BY ap.year;
+-- Finding: The approval rate alone does not explain the default rate.
+-- 2009-2011: approval stayed at 8.5%-10% and these were the safest vintages (default 10.6%-13.7%).
+-- 2012: approval jumped from 9.07% to 13.66% and default rose from 10.63% to 13.58%,
+-- consistent with looser approval leading to higher risk.
+-- 2013: approval reached its peak (15.05%) but default fell to 12.33%, helped by the highest
+-- interest rates of the period (Q9b), so risk was priced well.
+-- 2014: approval dropped to 10.86% but default still rose to 13.73%, the opposite direction.
+-- Default depends not only on how many applicants are approved, but also on who applies and on
+-- pricing: applications grew about 2.4x in 2014 (Q11), so a lower approval rate can come from a
+-- weaker applicant pool rather than a stricter policy.
+-- 2016-2018: approval fell to 4.96%, but these loans had not matured, so their outcome is unknown.
