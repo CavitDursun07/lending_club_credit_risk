@@ -62,3 +62,37 @@ ORDER BY region, region_rank;
 -- while the 3rd riskiest state in the Northeast (Pennsylvania) is only 18th.
 -- Nevada is an outlier in the West: 3 points above the next state (Arizona, 15.04%).
 -- California, the largest state (103,888 loans), is close to the portfolio average (15.01% vs 14.87%).
+
+-- Q16. How did volume and default rate change from the previous year? (36-month mature loans)
+WITH yearly AS (
+    SELECT
+        d.year,
+        COUNT(*)                          AS loan_count,
+        ROUND(AVG(l.is_default) * 100, 2) AS default_rate_pct
+    FROM loans_mature AS l
+    JOIN dim_date AS d ON l.issue_date = d.month_date
+    WHERE l.term_months = 36
+    GROUP BY d.year
+)
+SELECT
+    year,
+    loan_count,
+    LAG(loan_count) OVER w                                    AS prev_loan_count,
+    ROUND(
+        (loan_count - LAG(loan_count) OVER w) * 100.0
+        / LAG(loan_count) OVER w,
+        2
+    )                                                         AS loan_growth_pct,
+    default_rate_pct,
+    LAG(default_rate_pct) OVER w                              AS prev_default_rate_pct,
+    default_rate_pct - LAG(default_rate_pct) OVER w           AS default_change_pts
+FROM yearly
+WINDOW w AS (ORDER BY year)
+ORDER BY year;
+-- Finding: Volume grew every year, by 54% to 300%, but growth and risk moved together only after 2011.
+-- 2008-2011: volume grew while default fell (from 26.38% to 10.63%), as lending recovered after the crisis.
+-- 2012 was the fastest growth year after the crisis (+208%) and had the largest default increase (+2.95 pts).
+-- 2014 and 2015 repeated the pattern: +62% and +74% volume with +1.40 and +1.16 pts default.
+-- 2013 was the only exception: +131% volume with a lower default rate (-1.25 pts),
+-- when interest rates were at their highest (Q9b).
+-- In 3 of the 4 years after 2011, fast growth came with rising risk.
