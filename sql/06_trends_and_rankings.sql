@@ -133,3 +133,4 @@ ORDER BY sub_grade DESC;
 -- Loss rate is not perfectly ordered within G (e.g. G4 11.16% vs G3 14.95%) because these
 -- sub-grades have only 182-765 loans; from F2 downward the order is almost perfect.
 -- Rejecting risky loans also gives up their interest income, so the trade-off is examined in 07_policy_scenario.sql.
+
