@@ -10,6 +10,7 @@
 ## 1. Data model
 
 The model is a **star schema**: three fact tables share two dimension tables (*conformed dimensions*).
+`loan_risk_scores` stores the output of the default model and links to `loans` one-to-one.
 
 ```mermaid
 erDiagram
@@ -19,6 +20,7 @@ erDiagram
     dim_state ||--o{ loans : "state_code = addr_state"
     dim_state ||--o{ rejected_applications : "state_code = addr_state"
     dim_state ||--o{ accepted_monthly : "state_code = addr_state"
+    loans ||--o| loan_risk_scores : "id = id"
 
     loans {
         bigint id PK
@@ -65,9 +67,16 @@ erDiagram
         varchar state_name
         varchar region
     }
+    loan_risk_scores {
+        bigint id PK
+        varchar sample
+        numeric default_probability
+        varchar risk_band
+        smallint risk_band_order
+    }
 ```
 
-*The `loans` box shows only the key columns; the full list is in section 3.*
+*The `loans` box shows only the key columns; the full list is in section 3. Views are not shown in the diagram (see sections 8-9).*
 
 | Table | Type | Rows | Grain (one row = ) | Created in |
 | --- | --- | --- | --- | --- |
@@ -77,6 +86,9 @@ erDiagram
 | `dim_date` | Dimension | 140 | one month (2007-05 to 2018-12) | `sql/01c_dimensions.sql` |
 | `dim_state` | Dimension | 51 | one US state (incl. DC) | `sql/01c_dimensions.sql` |
 | `loans_mature` | View | 676,296 | one mature loan | `sql/01_schema.sql` |
+| `loan_risk_scores` | Model output | 621,016 | one 36-month mature loan | `sql/09_risk_scores.sql`, `notebooks/04_default_model.ipynb` |
+| `vw_loans` | View (Power BI) | 1,347,698 | one completed loan | `sql/08_views.sql` |
+| `vw_approval_monthly` | View (Power BI) | 6,564 | one month + state | `sql/08_views.sql` |
 
 **Design notes**
 - All dates are stored at **month level** (first day of the month), so every fact table joins `dim_date` directly.
@@ -92,6 +104,9 @@ erDiagram
 | Default rate | `AVG(is_default)` | Share of loans that defaulted (by count) |
 | Loss rate | `SUM(net_loss) / SUM(loan_amnt)` | Share of lent money that was lost (by amount) |
 | Approval rate | `accepted / (accepted + rejected)` | Share of applications that were approved |
+| Net return rate | `SUM(total_pymnt - loan_amnt) / SUM(loan_amnt)` | Profit or loss per dollar lent, over the life of the loan (ignores funding costs and fees) |
+
+Rates are always calculated as a **ratio of sums**, never as an average of rates.
 
 ---
 
@@ -203,6 +218,60 @@ One row per month, generated with `generate_series` (2007-05 to 2018-12).
 | `region` | text | `West` | US Census region: `Northeast`, `Midwest`, `South`, `West` |
 
 ---
+
+## 8. Views for Power BI (`sql/08_views.sql`)
+
+Power BI imports these two views plus `dim_date`, `dim_state` and `loan_risk_scores`.
+The views keep only keys and additive values; **rates are calculated in Power BI (DAX)**, because rates cannot be summed.
+
+### `vw_loans`
+
+All columns needed by the dashboard from `loans`, plus the bands and groups used in the SQL analysis,
+so that the same definitions are used everywhere (*single source of truth*).
+
+| Column | Description |
+| --- | --- |
+| `id`, `issue_date`, `addr_state`, `term_months`, `grade`, `sub_grade`, `purpose`, `home_ownership`, `loan_amnt`, `int_rate`, `fico_avg`, `dti`, `is_default`, `net_loss` | Same as in `loans` |
+| `grade_group` | `A`, `B-C`, `D`, `E-G` |
+| `fico_band` / `fico_band_order` | `< 660`, `660-679`, `680-699`, `700-719`, `720-739`, `740+` and their sort order (1-6) |
+| `dti_band` / `dti_band_order` | `< 10`, `10-19`, `20-29`, `30+`, `Missing` and their sort order (1-5) |
+| `net_return` | `total_pymnt - loan_amnt`: positive = interest earned, negative = loss |
+| `is_mature` | 1 if the loan is in `loans_mature` (36-month issued before 2016, 60-month before 2014), otherwise 0 |
+
+### `vw_approval_monthly`
+
+Accepted and rejected applications per month and state. Rejected applications are aggregated from 27.6M rows to month + state.
+Built with a `FULL OUTER JOIN`, because 578 month-state combinations have rejected applications but no accepted loans.
+
+| Column | Description |
+| --- | --- |
+| `month` | First day of the month, FK → `dim_date` |
+| `addr_state` | State, FK → `dim_state` |
+| `accepted_count` | Accepted loans (all statuses, from `accepted_monthly`) |
+| `rejected_count` | Rejected applications (from `rejected_applications`) |
+
+Totals: 2,260,668 accepted · 27,648,719 rejected.
+
+---
+
+## 9. `loan_risk_scores` (model output)
+
+Default probability and risk band from the default model (Model B: borrower information + sub-grade, logistic regression).
+Only 36-month mature loans are scored. Rewritten every time `notebooks/04_default_model.ipynb` runs (`TRUNCATE` + load).
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | integer, PK | Loan ID, joins `loans.id` (no foreign key, so `loans` can be rebuilt) |
+| `sample` | text | `train` (issued 2007-2014) or `test` (issued 2015). Model performance should be shown on `test` only |
+| `default_probability` | decimal | Predicted probability of default (0-1) |
+| `risk_band` | text | `Very low`, `Low`, `Medium`, `High`, `Very high` |
+| `risk_band_order` | integer | Sort order of the band (1-5) |
+
+Band thresholds are fixed on the training predictions (30% / 30% / 20% / 10% / 10% of training loans).
+On the test set, actual default rises from 5.84% (Very low) to 30.72% (Very high).
+The model underestimates risk in 2015 (especially for risky loans), so probabilities should be recalibrated before being used for loss forecasting.
+
+---
 ---
 
 # Veri Sözlüğü (Türkçe)
@@ -212,7 +281,7 @@ One row per month, generated with `generate_series` (2007-05 to 2018-12).
 
 ## 1. Veri modeli
 
-Model bir **yıldız şemasıdır (star schema)**: üç fact (olay) tablosu, iki ortak dim (boyut) tablosunu paylaşır (*paylaşılan boyut, conformed dimension*). Şema yukarıdaki İngilizce bölümdedir.
+Model bir **yıldız şemasıdır (star schema)**: üç fact (olay) tablosu, iki ortak dim (boyut) tablosunu paylaşır (*paylaşılan boyut, conformed dimension*). `loan_risk_scores`, default modelinin çıktısını tutar ve `loans` ile bire bir bağlıdır. Şema yukarıdaki İngilizce bölümdedir.
 
 | Tablo | Tür | Satır | Bir satır = | Oluşturulduğu yer |
 | --- | --- | --- | --- | --- |
@@ -222,6 +291,9 @@ Model bir **yıldız şemasıdır (star schema)**: üç fact (olay) tablosu, iki
 | `dim_date` | Dim | 140 | bir ay (2007-05 – 2018-12) | `sql/01c_dimensions.sql` |
 | `dim_state` | Dim | 51 | bir ABD eyaleti (DC dahil) | `sql/01c_dimensions.sql` |
 | `loans_mature` | View | 676,296 | vadesi dolmuş bir kredi | `sql/01_schema.sql` |
+| `loan_risk_scores` | Model çıktısı | 621,016 | 36 aylık bir olgun kredi | `sql/09_risk_scores.sql`, `notebooks/04_default_model.ipynb` |
+| `vw_loans` | View (Power BI) | 1,347,698 | sonuçlanmış bir kredi | `sql/08_views.sql` |
+| `vw_approval_monthly` | View (Power BI) | 6,564 | bir ay + eyalet | `sql/08_views.sql` |
 
 **Tasarım notları**
 - Bütün tarihler **ay düzeyinde** (ayın ilk günü) tutulur; böylece her fact tablosu `dim_date` ile doğrudan birleşir.
@@ -235,6 +307,9 @@ Model bir **yıldız şemasıdır (star schema)**: üç fact (olay) tablosu, iki
 | Default oranı | `AVG(is_default)` | Batan kredilerin oranı (adet bazında) |
 | Kayıp oranı | `SUM(net_loss) / SUM(loan_amnt)` | Verilen paranın kaybedilen kısmı (tutar bazında) |
 | Onay oranı | `onaylanan / (onaylanan + reddedilen)` | Onaylanan başvuruların oranı |
+| Net getiri oranı | `SUM(total_pymnt - loan_amnt) / SUM(loan_amnt)` | Kredi ömrü boyunca verilen her dolar başına kâr veya zarar (fonlama maliyeti ve ücretler dahil değil) |
+
+Oranlar her zaman **toplamların oranı** olarak hesaplanır, asla oranların ortalaması olarak değil.
 
 ## 3. `loans` (fact)
 
@@ -336,3 +411,53 @@ Her ay için bir satır, `generate_series` ile oluşturuldu (2007-05 – 2018-12
 | `state_code` | char(2), PK | `CA` | İki harfli eyalet kodu (JOIN anahtarı) |
 | `state_name` | metin | `California` | Eyalet adı |
 | `region` | metin | `West` | ABD Nüfus Bürosu bölgesi: `Northeast` (Kuzeydoğu), `Midwest` (Orta Batı), `South` (Güney), `West` (Batı) |
+
+## 8. Power BI view'ları (`sql/08_views.sql`)
+
+Power BI bu iki view'ı, `dim_date`, `dim_state` ve `loan_risk_scores` ile birlikte içe aktarır.
+View'lar sadece anahtarları ve toplanabilir değerleri taşır; **oranlar Power BI'da (DAX) hesaplanır**, çünkü oranlar toplanamaz.
+
+### `vw_loans`
+
+Dashboard'un `loans` tablosundan ihtiyaç duyduğu kolonlar ve SQL analizinde kullanılan bantlar ve gruplar.
+Böylece her yerde aynı tanımlar kullanılır (*tek doğru kaynak, single source of truth*).
+
+| Kolon | Açıklama |
+| --- | --- |
+| `id`, `issue_date`, `addr_state`, `term_months`, `grade`, `sub_grade`, `purpose`, `home_ownership`, `loan_amnt`, `int_rate`, `fico_avg`, `dti`, `is_default`, `net_loss` | `loans` ile aynı |
+| `grade_group` | `A`, `B-C`, `D`, `E-G` |
+| `fico_band` / `fico_band_order` | `< 660`, `660-679`, `680-699`, `700-719`, `720-739`, `740+` ve sıralama numarası (1-6) |
+| `dti_band` / `dti_band_order` | `< 10`, `10-19`, `20-29`, `30+`, `Missing` ve sıralama numarası (1-5) |
+| `net_return` | `total_pymnt - loan_amnt`: pozitif = kazanılan faiz, negatif = kayıp |
+| `is_mature` | Kredi `loans_mature` içindeyse 1 (36 ay 2016 öncesi, 60 ay 2014 öncesi), değilse 0 |
+
+### `vw_approval_monthly`
+
+Ay ve eyalet bazında onaylanan ve reddedilen başvurular. Reddedilen başvurular 27,6 milyon satırdan ay + eyalet düzeyine toplanır.
+`FULL OUTER JOIN` ile kurulur, çünkü 578 ay + eyalet kombinasyonunda ret var ama onay yok.
+
+| Kolon | Açıklama |
+| --- | --- |
+| `month` | Ayın ilk günü, FK → `dim_date` |
+| `addr_state` | Eyalet, FK → `dim_state` |
+| `accepted_count` | Onaylanan krediler (bütün statüler, `accepted_monthly`'den) |
+| `rejected_count` | Reddedilen başvurular (`rejected_applications`'tan) |
+
+Toplam: 2.260.668 onay · 27.648.719 ret.
+
+## 9. `loan_risk_scores` (model çıktısı)
+
+Default modelinden (Model B: borçlu bilgileri + alt not, lojistik regresyon) gelen default olasılığı ve risk bandı.
+Sadece 36 aylık olgun krediler puanlanır. `notebooks/04_default_model.ipynb` her çalıştığında yeniden yazılır (`TRUNCATE` + yükleme).
+
+| Kolon | Tip | Açıklama |
+| --- | --- | --- |
+| `id` | tam sayı, PK | Kredi numarası, `loans.id` ile birleşir (yabancı anahtar yok, `loans` yeniden kurulabilsin diye) |
+| `sample` | metin | `train` (2007-2014'te verilen) veya `test` (2015'te verilen). Model performansı sadece `test` ile gösterilmeli |
+| `default_probability` | ondalık | Tahmin edilen default olasılığı (0-1) |
+| `risk_band` | metin | `Very low`, `Low`, `Medium`, `High`, `Very high` |
+| `risk_band_order` | tam sayı | Bandın sıralama numarası (1-5) |
+
+Bant sınırları eğitim tahminlerinden belirlenir (eğitim kredilerinin %30 / %30 / %20 / %10 / %10'u).
+Test setinde gerçek default oranı %5,84'ten (Very low) %30,72'ye (Very high) yükselir.
+Model 2015'te riski (özellikle riskli kredilerde) olduğundan düşük tahmin eder; olasılıklar kayıp tahmininde kullanılmadan önce yeniden kalibre edilmelidir.
